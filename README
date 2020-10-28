@@ -1,0 +1,125 @@
+README
+
+    The program represents the implementation of a hash table, which aims to solve
+collisions by the "linear probing" technique, allocating for each index of the
+table a bucket of two nodes (key & value).
+
+    Implementation
+
+    The GpuHashTable class contains the number of nodes successfully inserted and the hash table
+(which represents a structure) with its afferent fields.
+    class GpuHashTable {
+        hashStruct hashTable;           <- hash table
+        int nrNodes;                    <- number of nodes inserted in the table, used
+                                            to compute loadFactor of the table
+    };
+
+The hash table is implemented through the following structure:
+    struct hashStruct {
+        int dupes [1];      <- keep track of the number of keys that are updated when calling
+                                the insertBatch function, representing the duplicate keys;
+                                this record is used to update the number
+                                of nodes inserted in the table
+        int sizeHash;       <- keep the size of the hash table
+        int numKeys;        <- keep the number of keys accounted for in 
+                                kernel functions, so that a thread knows if it needs to
+                                to process the corresponding element or not (check whether
+                                the index of the respective node, key and value,
+                                which thread has to process exceeds the size of
+                                vector given as input)
+        int error;          <- flag used to verify the successful execution of
+                                hash table modification operations
+        hashNode * hash [BUCKET_SIZE];      <- hash table [for each index assign 
+                                            a bucket with BUCKET_SIZE (2 knots)]
+    };
+
+    struct hashNode {
+        int key; <- key node
+        int value; <- value corresponding to the key
+    };
+
+
+    Insertion is done using linear probing: calculate hash(key) and if in
+the corespondign bucket of the hash there are no available slots (key & value),
+successively search buckets from hash (key) + 1 ... indexes to the last 
+index available in the hash table.
+During the "insert" operation, the "kernel_insert" function is called, in which
+each thread will handle a node (key & value), depending on the block in which
+its ID is.
+    ** Before calling kernel functions, the size of the hash table is checked for 
+overflow. If there is not enough space in the table, the function "reshape" 
+is called, with a size that ensures a load factor of at least 80% (this load factor
+is calculated using the number of nodes to be inserted and the number of
+nodes already existing in the table). Thus, a permanent load factor of over 80% is ensured.
+
+    When resizing the hash table, "reshape" function will create a new "hashStruct"
+structure with the size received as parameter, then the kernel_insert function
+will be called, to ensure the reinsertion of the nodes in the newly created table.
+
+    To extract values ​​from the table based on some keys, search in the corresponding bucket
+by hash(key), and if the key you are looking for is not tin that exact location, it will be
+searched sequencely in buckets from index [hash (key) + 1 ... sizeHash - 1] or [0 .. hash (key) - 1].
+
+
+    Memory storage
+
+    hashNode * hash [BUCKET_SIZE] stored exclusively in VRAM, allocating
+auxiliary vectors for data transmission to kernel functions (eg keys in deviceKeys,
+values ​​in deviceValues) or for storing the result of the "getBatch" function, which is to be
+copied to the vector allocated on the CPU, which will be returned as a result (GPU: resultValues ​​->
+CPU: hostResultValues). A "dupes" field correspondent is also assigned to the GPU [1],
+to be atomically incremented each time a value of a key is already updated
+existing in the hash table.
+
+    Conclusions
+
+    Although this approach of "linear probing" benefits from the spatial locality, it also presents
+the disadvantage of "clustering" (a collision leads to the node shifting near the index
+hash(key), which leads to the formation of a cluster), but that's why the programme
+reserves two possible node locations per hash(key) index, known as the "bucket" approach
+so as to minimize the penalty caused by clustering of knots.
+    Furthermore, because the load factor is kept at a minimum threshold of 80%, the risk of collisions
+increases, therefore, so does the search time for a new bucket in which a node must be inserted. Given
+that parallelization brings short running times / number of elements inserted, because each node (key & value) 
+is distributed to a thread that searches in parallel for the place of insertion in the hash table,
+parallelization has a great impact on performance. Thus, the temporal penalty caused by "lookup" is masked
+by parallelism, inserting a group of nodes at once. To ensure the correct insertion of the node, the atomic 
+operation "atomicCAS" is used, checking if there is no node at the desired index (we have a KEY_INVALID), or
+finding a node with a key whose values ​​need to be updated.
+
+
+Rezults execution :
+
+-------------- Test T1 --------------
+OK       HASH_BATCH_INSERT, 1000000, 100, 100
+OK       HASH_BATCH_GET, 1000000, 100, 80
+
+-------------- Test T2 --------------
+OK       HASH_BATCH_INSERT, 2000000, 200, 100
+OK       HASH_BATCH_GET, 2000000, inf, 80
+
+-------------- Test T3 --------------
+OK       HASH_BATCH_INSERT, 2000000, 100, 100
+OK       HASH_BATCH_INSERT, 2000000, 200, 80
+OK       HASH_BATCH_GET, 2000000, 100, 80.0013
+OK       HASH_BATCH_GET, 2000000, 200, 80.0013
+
+-------------- Test T4 --------------
+OK       HASH_BATCH_INSERT, 2500000, 83.3333, 100
+OK       HASH_BATCH_INSERT, 2500000, 125, 80
+OK       HASH_BATCH_INSERT, 2500000, 125, 80
+OK       HASH_BATCH_INSERT, 2500000, 62.5, 80
+OK       HASH_BATCH_GET, 2500000, 125, 80.0005
+OK       HASH_BATCH_GET, 2500000, 250, 80.0005
+OK       HASH_BATCH_GET, 2500000, 125, 80.0005
+OK       HASH_BATCH_GET, 2500000, 125, 80.0005
+
+Time spent :
+
+real    0m4.984s
+user    0m2.322s
+sys     0m2.337s
+
+Bibliography:
+https://www.geeksforgeeks.org/hashing-set-3-open-addressing/
+https://www.geeksforgeeks.org/implementing-hash-table-open-addressing-linear-probing-cpp/
